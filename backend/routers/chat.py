@@ -2,16 +2,16 @@
 Router de chat: el corazón de la aplicación.
 
 Flujo de cada mensaje:
-  1. Guardar el mensaje del usuario (persistencia, req. 4)
-  2. Buscar contexto relevante en los documentos (RAG, req. 6)
-     - La búsqueda usa la pregunta + últimos mensajes, para que preguntas
-       de seguimiento como "¿y por qué ese límite?" recuperen bien (req. 5)
+  1. Guardar el mensaje del usuario
+  2. Buscar contexto relevante en los documentos
+     - La búsqueda usa la pregunta + últimos mensajes
   3. Armar el prompt: system con contexto documental + TODO el historial
-     de la conversación (memoria conversacional, req. 5)
-  4. Llamar al LLM (req. 3)
-  5. Guardar la respuesta con sus fuentes y devolverla (req. 7)
+     de la conversación
+  4. Llamar al LLM
+  5. Guardar la respuesta con sus fuentes y devolverla.
 """
 import json
+import re
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -26,8 +26,10 @@ SYSTEM_PROMPT = (
     "Cuando se te proporcione CONTEXTO DE DOCUMENTOS, básate en él para responder "
     "y menciona de qué documento proviene la información. Si la pregunta no tiene "
     "relación con los documentos, responde con tu conocimiento general. "
-    "Si el contexto no contiene la respuesta, dilo honestamente."
-    
+    "Si el contexto no contiene la respuesta, dilo honestamente. "
+    "Al final de tu respuesta, en una línea nueva, escribe exactamente [DOCS: SI] "
+    "si usaste el CONTEXTO DE DOCUMENTOS para responder, o [DOCS: NO] si no lo usaste. "
+    "No menciones ni expliques esta marca."
 )
 
 
@@ -69,11 +71,14 @@ def chat(req: ChatRequest):
         (req.conversation_id,),
     ).fetchall()
 
-    # 2. Búsqueda RAG con contexto conversacional:
-    #    se concatenan los últimos mensajes para resolver referencias
-    #    como "ese límite" en preguntas de seguimiento.
-    recent = " ".join(m["content"] for m in history[-3:])
-    retrieved = rag.search_chunks(recent)
+    # 2. Búsqueda RAG en dos pasadas:
+    #    - Primera: solo la pregunta actual (precisión en preguntas autónomas).
+    #    - Segunda: pregunta + últimos mensajes, únicamente si la primera no
+    #      encontró nada — señal de pregunta referencial.
+    retrieved = rag.search_chunks(req.message)
+    if not retrieved and len(history) > 1:
+        recent = " ".join(m["content"] for m in history[-3:])
+        retrieved = rag.search_chunks(recent)
 
     # 3. Construir los mensajes para el LLM
     system = SYSTEM_PROMPT
@@ -94,6 +99,19 @@ def chat(req: ChatRequest):
     except Exception as e:
         conn.close()
         raise HTTPException(status_code=502, detail=f"Error del proveedor de IA: {e}")
+
+    # ¿El modelo realmente usó los documentos? Se le pide que lo declare
+    # con una marca [DOCS: SI/NO] que se extrae y elimina de la respuesta.
+    used_docs = True  # si no hay marca, se conserva el comportamiento anterior
+    match = re.search(r"\[DOCS:\s*(SI|SÍ|NO)\]", answer, re.IGNORECASE)
+    if match:
+        used_docs = match.group(1).upper() != "NO"
+        answer = re.sub(
+            r"\s*\[DOCS:\s*(SI|SÍ|NO)\]\s*", "", answer, flags=re.IGNORECASE
+        ).strip()
+
+    if not used_docs:
+        retrieved = []
 
     # 5. Guardar la respuesta con sus fuentes (sin duplicados)
     seen = set()

@@ -1,7 +1,7 @@
 """
 Extracción de texto de documentos.
 Devuelve una lista de tuplas (texto, página) para conservar la referencia
-de página cuando es posible (requisito 7 + bonus de página).
+de página cuando es posible
 """
 from pypdf import PdfReader
 from docx import Document

@@ -1,6 +1,6 @@
 """
 Router de documentos.
-Cubre la carga de PDF/DOCX y su indexación para RAG (requisito 6).
+Cubre la carga de PDF/DOCX y su indexación para RAG
 """
 import os
 
